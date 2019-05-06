@@ -1,0 +1,113 @@
+# Using Machine Learning to Predict Weight Lifting Form from Wearable Accelerometer Data
+*by MAS May 2019*
+
+## Summary
+This report describes the construction of a machine learning classifier to predict how well a specific weight lifting excercise was performed. Six classifications were used to describe weight lifting form:
+
+* Class A:      Proper Form
+* Class B:      Elbows Thrown Forward
+* Class C:      Lifting Halfway
+* Class D:      Lowering Halfway
+* Class E:      Hips Thrown Forward
+
+While we often quantify how much of a given activity we perform, we rarely quantify how well we perform it. Maintaining proper form while weight lifting is essential for maximizing muscle growth and minimizing the risk of injury. Wearable accelerometers may assist in monitoring form given a suitable model to predict form from raw accelerometer data. In this report we present a machine learning model based on random forests that results in an estimated out-of-bag error rate of <1% and an out-of-sample accuracy of >99%.
+
+The data for this project are available here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har. 
+
+## Reading the Training and Test Set
+The training and test set have already been separated and stored as two separate ```.csv``` files which can be read and stored as two separate data objects. After placing the ```.csv``` files in the working directory the following R code can be executed to read the data.
+
+```{r}
+# Training
+train <- read.csv("pml-training.csv")
+
+# Testing
+test <- read.csv("pml-testing.csv")
+```
+
+## Preprocessing
+The code below shows we have 160 features to work with:
+```{r}
+dim(train)
+```
+The last column contains the classification labels
+```{r}
+head(train[,160])
+```
+Let's figure out if any features have a lot of missing data. Features that have a lot NA values will not be useful for training. Let's define a threshold of 75% NAs as our cutoff. If a feature has more than 75% NA values, it is discarded. 
+```{r}
+# Remove features with >75% NA
+pre_train <- train[,colSums(is.na(train)) < 0.75*nrow(train)]
+```
+Similarly, check and remove blank data. 
+```{r}
+# Remove features with >75% blank data
+pre_train <- pre_train[,colSums(pre_train == "") < 0.75*nrow(pre_train)]
+```
+Finally, remove the timestamp and index column since these are arbitrary.
+```{r}
+pre_train <- pre_train[,-5]
+pre_train <- pre_train[,-1]
+```
+Before we being model building, let's standardize the data by centering and scaling the non-categorical data and then encoding the categorical data.
+```{r, message=FALSE}
+library(caret)
+# Standardize features
+pre_trainObj <- preProcess(pre_train[,-58], method=c("center", "scale"))
+pre_train <- predict(pre_trainObj, pre_train[,-58])
+pre_train$classe <- train$classe
+```
+## Model Building
+First, partition the training set into trianing and validation sets using a 60/40 split using the ```caret``` library.
+```{r}
+set.seed(9876)
+inTrain <- createDataPartition(y=pre_train$classe, p=0.60, list=FALSE)
+training <- pre_train[inTrain,]
+validation <- pre_train[-inTrain,]
+```
+With this many features, a decision tree might be a good model to start with. Let's first build a tree using all features and then evaluate the generalizability of the model with 10-fold cross validation. This will randomly sample the data without replacement in 10 folds. 
+```{r}
+set.seed(1234)
+train_control <- trainControl(method="cv", number=10, savePredictions = TRUE)
+model <- train(classe ~., data=training, trControl=train_control, method="rpart")
+model
+```
+The accuracy is not particularly high so let's try random forests to improve model accuracy. Since RF relies on bagging, the out-of-bag error estimate can be used to assess model accuracy.
+```{r, message=FALSE}
+library(randomForest)
+set.seed(5678)
+modelRF <- randomForest(classe ~., data=training)
+modelRF
+```
+Now let's apply to the validation set to assess the out of sample error.
+```{r}
+valRF <- predict(modelRF, newdata=validation)
+confusionMatrix(validation$classe, valRF)
+```
+We see the accuracy is now quite high (>99%) and can be applied to the test set. We can see a breakdown of the features by importance (only the first 30 features are shown for clarity) as determined by the decrease in Gini Coefficient. This shows how much each variable contributes to the homogeneity of nodes/leaves of the random forest:
+```{r}
+varImpPlot(modelRF)
+```  
+
+## Preprocessing the Test Set
+We will now perform all of the preprocessing on the test set using the criteria established for the training set.
+```{r, message=FALSE}
+library(dplyr)
+pre_train_names <- colnames(pre_train[,-58])
+pre_train_ref <- select(pre_train, pre_train_names)
+pre_test <- select(test, pre_train_names)
+
+# Standardize data using training set
+pre_test <- predict(pre_trainObj, pre_test)
+# Ensure indexing is consistent between training and test sets
+pre_test <- rbind(pre_train_ref[1,] , pre_test)
+pre_test <- pre_test[-1,]
+row.names(pre_test) <- 1:20
+```
+
+## Applying the Model to the Test Set
+The test set is now pre-processed. Let's apply the random forest model:
+```{r}
+testRF <- predict(modelRF, newdata=pre_test)
+testRF
+```
